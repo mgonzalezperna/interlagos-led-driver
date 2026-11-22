@@ -33,7 +33,7 @@ bind_interrupts!(struct Irqs {
 const WIFI_NETWORK: &str = ""; // change to your network SSID
 const WIFI_PASSWORD: &str = ""; // change to your network password
 
-/// Number of LEDs on the strip (data line on GPIO 10).
+/// Number of LEDs on the strip (data line on GP7, physical pin 10).
 const NUM_LEDS: usize = 90;
 /// Number of LEDs lit behind the current position, as a fading trail.
 const TRAIL_LEN: usize = 6;
@@ -190,7 +190,7 @@ async fn main(spawner: Spawner) {
         &mut common,
         sm0,
         peripherals.DMA_CH1,
-        peripherals.PIN_10,
+        peripherals.PIN_7,
         &ws2812_program,
     );
     let mut frame = [RGB8::default(); NUM_LEDS];
