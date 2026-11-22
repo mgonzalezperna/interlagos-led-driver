@@ -42,6 +42,10 @@ const TRAIL_LEN: usize = 6;
 const MAX_BRIGHTNESS: u8 = 40;
 /// If no packet arrives for this long, the strip goes back to the idle display.
 const TELEMETRY_TIMEOUT: Duration = Duration::from_millis(1000);
+/// Time the strip stays on (and then off) while blinking during boot.
+const BOOT_BLINK_HALF_PERIOD: Duration = Duration::from_millis(500);
+/// Boot blink colour. Every LED is lit, so keep it dim to limit current draw.
+const BOOT_BLINK_COLOUR: RGB8 = RGB8::new(0, 0, MAX_BRIGHTNESS / 4);
 
 /// Latest telemetry received over UDP. Only the newest sample matters, so a
 /// `Signal` (which overwrites unread values) is used instead of a queue.
@@ -97,9 +101,9 @@ async fn udp_task(stack: Stack<'static>) -> ! {
 async fn led_task(mut leds: PioWs2812<'static, PIO1, 0, NUM_LEDS>) -> ! {
     let mut frame = [RGB8::default(); NUM_LEDS];
 
-    loop {
-        let sample = with_timeout(TELEMETRY_TIMEOUT, TELEMETRY.wait()).await.ok();
+    let mut sample = Some(blink_until_first_packet(&mut leds, &mut frame).await);
 
+    loop {
         frame.fill(RGB8::default());
         match sample {
             Some(sample) => render_position(&mut frame, sample.lap_pct),
@@ -107,6 +111,30 @@ async fn led_task(mut leds: PioWs2812<'static, PIO1, 0, NUM_LEDS>) -> ! {
             None => frame[0] = RGB8::new(MAX_BRIGHTNESS / 4, 0, 0),
         }
         leds.write(&frame).await;
+
+        sample = with_timeout(TELEMETRY_TIMEOUT, TELEMETRY.wait()).await.ok();
+    }
+}
+
+/// Blink the whole strip while booting (Wi-Fi join, DHCP, waiting for SimHub),
+/// and return the first telemetry sample once it arrives.
+async fn blink_until_first_packet(
+    leds: &mut PioWs2812<'static, PIO1, 0, NUM_LEDS>,
+    frame: &mut [RGB8; NUM_LEDS],
+) -> Telemetry {
+    let mut lit = true;
+    loop {
+        let colour = if lit { BOOT_BLINK_COLOUR } else { RGB8::default() };
+        frame.fill(colour);
+        leds.write(frame).await;
+        lit = !lit;
+
+        // Waiting on the signal doubles as the blink delay, so the first packet
+        // ends the blinking immediately instead of after the current half-period.
+        if let Ok(sample) = with_timeout(BOOT_BLINK_HALF_PERIOD, TELEMETRY.wait()).await {
+            defmt::info!("First telemetry packet received");
+            return sample;
+        }
     }
 }
 
