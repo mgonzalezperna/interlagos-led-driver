@@ -36,10 +36,11 @@ bind_interrupts!(struct Irqs {
 const WIFI_NETWORK: &str = ""; // change to your network SSID
 const WIFI_PASSWORD: &str = ""; // change to your network password
 
-/// Number of LEDs on the strip (data line on GPIO 10).
-const NUM_LEDS: usize = 90;
-/// Number of LEDs lit behind the current position, as a fading trail.
-const TRAIL_LEN: usize = 6;
+/// Number of addressable pixels on the strip (data line on GPIO 10). Each pixel
+/// drives a group of three physical LEDs, so 90 LEDs give 30 pixels.
+const NUM_LEDS: usize = 30;
+/// Number of pixels lit behind the current position, as a fading trail.
+const TRAIL_LEN: usize = 2;
 /// Peak value of each colour channel. 90 LEDs at full white can draw over 5 A,
 /// so keep this low unless the strip has its own power supply.
 const MAX_BRIGHTNESS: u8 = 40;
@@ -232,14 +233,20 @@ async fn led_task(mut leds: PioWs2812<'static, PIO0, 1, NUM_LEDS>) -> ! {
 }
 
 /// Light the LED at `lap_pct` (0.0 to 1.0) with a fading trail behind it.
+///
+/// Brightness falls off with the square of the distance from the head. Perceived
+/// brightness is non-linear, so a linear fade makes the tail look like it stays
+/// bright; a squared fade looks like an even fade.
 fn render_position(frame: &mut [RGB8; NUM_LEDS], lap_pct: f32) {
     let pct = lap_pct.clamp(0.0, 1.0);
     let head = ((pct * NUM_LEDS as f32) as usize).min(NUM_LEDS - 1);
 
+    let steps = TRAIL_LEN + 1;
     for i in 0..=TRAIL_LEN {
         // Trail wraps around the end of the strip.
         let index = (head + NUM_LEDS - i) % NUM_LEDS;
-        let level = (MAX_BRIGHTNESS as usize * (TRAIL_LEN + 1 - i) / (TRAIL_LEN + 1)) as u8;
+        let remaining = steps - i;
+        let level = (MAX_BRIGHTNESS as usize * remaining * remaining / (steps * steps)) as u8;
         frame[index] = RGB8::new(0, level, 0);
     }
 }
