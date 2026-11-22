@@ -38,9 +38,9 @@ const WIFI_PASSWORD: &str = ""; // change to your network password
 
 /// Number of addressable pixels on the strip (data line on GPIO 10). Each pixel
 /// drives a group of three physical LEDs, so 90 LEDs give 30 pixels.
-const NUM_LEDS: usize = 30;
+const NUM_LEDS: usize = 31;
 /// Number of pixels lit behind the current position, as a fading trail.
-const TRAIL_LEN: usize = 2;
+const TRAIL_LEN: usize = 1;
 /// Peak value of each colour channel. 90 LEDs at full white can draw over 5 A,
 /// so keep this low unless the strip has its own power supply.
 const MAX_BRIGHTNESS: u8 = 40;
@@ -232,14 +232,19 @@ async fn led_task(mut leds: PioWs2812<'static, PIO0, 1, NUM_LEDS>) -> ! {
     }
 }
 
-/// Light the LED at `lap_pct` (0.0 to 1.0) with a fading trail behind it.
+/// Light the pixel at `lap_pct` (0.0 to 1.0) with a fading trail behind it, and
+/// let the next pixel ahead glow up as the position approaches it.
 ///
 /// Brightness falls off with the square of the distance from the head. Perceived
 /// brightness is non-linear, so a linear fade makes the tail look like it stays
-/// bright; a squared fade looks like an even fade.
+/// bright; a squared fade looks like an even fade. The pixel ahead uses the same
+/// curve: it starts dark when the position enters the head pixel and reaches full
+/// brightness at the moment the position arrives at it.
 fn render_position(frame: &mut [RGB8; NUM_LEDS], lap_pct: f32) {
-    let pct = lap_pct.clamp(0.0, 1.0);
-    let head = ((pct * NUM_LEDS as f32) as usize).min(NUM_LEDS - 1);
+    let position = lap_pct.clamp(0.0, 1.0) * NUM_LEDS as f32;
+    let head = (position as usize).min(NUM_LEDS - 1);
+    // How far the position has progressed through the head pixel, 0.0 ..= 1.0.
+    let progress = (position - head as f32).clamp(0.0, 1.0);
 
     let steps = TRAIL_LEN + 1;
     for i in 0..=TRAIL_LEN {
@@ -249,6 +254,11 @@ fn render_position(frame: &mut [RGB8; NUM_LEDS], lap_pct: f32) {
         let level = (MAX_BRIGHTNESS as usize * remaining * remaining / (steps * steps)) as u8;
         frame[index] = RGB8::new(0, level, 0);
     }
+
+    // Pixel ahead of the head, wrapping from the end of the strip to the start.
+    let ahead = (head + 1) % NUM_LEDS;
+    let level = (MAX_BRIGHTNESS as f32 * progress * progress) as u8;
+    frame[ahead] = RGB8::new(0, level, 0);
 }
 
 #[embassy_executor::main]
