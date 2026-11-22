@@ -235,23 +235,29 @@ async fn led_task(mut leds: PioWs2812<'static, PIO0, 1, NUM_LEDS>) -> ! {
 /// Light the pixel at `lap_pct` (0.0 to 1.0) with a fading trail behind it, and
 /// let the next pixel ahead glow up as the position approaches it.
 ///
-/// Brightness falls off with the square of the distance from the head. Perceived
-/// brightness is non-linear, so a linear fade makes the tail look like it stays
-/// bright; a squared fade looks like an even fade. The pixel ahead uses the same
-/// curve: it starts dark when the position enters the head pixel and reaches full
-/// brightness at the moment the position arrives at it.
+/// Everything is a function of the exact (fractional) position, so nothing jumps
+/// when the position crosses into the next pixel:
+/// - the pixel ahead rises from dark to full brightness as the position arrives,
+/// - the head and trail pixels fade as the position moves away from them, and
+///   the last trail pixel fades out completely.
+///
+/// Brightness follows a squared curve. Perceived brightness is non-linear, so a
+/// linear fade makes the tail look like it stays bright; a squared fade looks
+/// like an even fade.
 fn render_position(frame: &mut [RGB8; NUM_LEDS], lap_pct: f32) {
     let position = lap_pct.clamp(0.0, 1.0) * NUM_LEDS as f32;
     let head = (position as usize).min(NUM_LEDS - 1);
     // How far the position has progressed through the head pixel, 0.0 ..= 1.0.
     let progress = (position - head as f32).clamp(0.0, 1.0);
 
-    let steps = TRAIL_LEN + 1;
+    // Head and trail: a pixel `i` pixels behind the head is `i + progress` pixels
+    // behind the position. Brightness reaches zero at `steps` pixels distance.
+    let steps = (TRAIL_LEN + 1) as f32;
     for i in 0..=TRAIL_LEN {
         // Trail wraps around the end of the strip.
         let index = (head + NUM_LEDS - i) % NUM_LEDS;
-        let remaining = steps - i;
-        let level = (MAX_BRIGHTNESS as usize * remaining * remaining / (steps * steps)) as u8;
+        let remaining = ((steps - (i as f32 + progress)) / steps).max(0.0);
+        let level = (MAX_BRIGHTNESS as f32 * remaining * remaining) as u8;
         frame[index] = RGB8::new(0, level, 0);
     }
 
