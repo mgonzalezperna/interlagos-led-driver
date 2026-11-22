@@ -2,8 +2,6 @@
 #![no_main]
 #![allow(async_fn_in_trait)]
 
-mod ws2812_12led_ring_handler;
-
 use core::str::FromStr;
 use cyw43::JoinOptions;
 use cyw43_pio::{PioSpi, DEFAULT_CLOCK_DIVIDER};
@@ -21,9 +19,7 @@ use embassy_rp::pwm::{Pwm, PwmOutput};
 use embassy_rp::uart::{Config as UartConfig, Uart, UartTx};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel;
-use lamarrs_utils::ColourRgb;
 
-use crate::ws2812_12led_ring_handler::{NUM_LEDS_RING, Ws2812LedRingEvents, ws2812_12_led_ring};
 use static_cell::StaticCell;
 
 use {defmt_rtt as _, panic_probe as _};
@@ -35,10 +31,6 @@ bind_interrupts!(struct Irqs {
 
 const WIFI_NETWORK: &str = ""; // change to your network SSID
 const WIFI_PASSWORD: &str = ""; // change to your network password
-
-static WS2812_12_LED_RING: channel::Channel<CriticalSectionRawMutex, Ws2812LedRingEvents, 10> =
-    channel::Channel::new();
-/// Channel to send manage a PWM handler actor.
 
 /// Create a new instance of the CYW43 driver.
 #[embassy_executor::task]
@@ -133,14 +125,4 @@ async fn main(spawner: Spawner) {
 
     // And now we can use it!
     defmt::info!("Stack is up!");
-    #[cfg(feature = "oled-ssd1306")]
-    oled_sender.send(OledEvents::ConnectedToWifi(true)).await;
-
-    // Spawn 12 LED ring RGB handler.
-    #[cfg(feature = "colour")]
-    {
-        let ws_2812_program = PioWs2812Program::new(&mut pio0.common);
-        let ws2812: PioWs2812<'static, PIO0, 1, NUM_LEDS_RING>= PioWs2812::new(&mut pio0.common, pio0.sm1, peripherals.DMA_CH1, peripherals.PIN_15, &ws_2812_program);
-        spawner.spawn( ws2812_12_led_ring(ws2812)).unwrap();
-    }
 }
