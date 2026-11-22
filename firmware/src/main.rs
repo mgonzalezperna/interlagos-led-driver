@@ -30,8 +30,6 @@ bind_interrupts!(struct Irqs {
     PIO1_IRQ_0 => InterruptHandler<PIO1>;
 });
 
-const WIFI_NETWORK: &str = ""; // change to your network SSID
-const WIFI_PASSWORD: &str = ""; // change to your network password
 
 /// Number of LEDs on the strip (data line on GPIO 10).
 const NUM_LEDS: usize = 45;
@@ -104,7 +102,7 @@ async fn udp_task(stack: Stack<'static>) -> ! {
 
 /// Draw the track position on the LED strip.
 #[embassy_executor::task]
-async fn led_task(mut leds: PioWs2812<'static, PIO1, 0, NUM_LEDS>) -> ! {
+async fn led_task(mut leds: PioWs2812<'static, PIO0, 1, NUM_LEDS>) -> ! {
     let mut frame = [RGB8::default(); NUM_LEDS];
 
     let mut sample = Some(blink_until_first_packet(&mut leds, &mut frame).await);
@@ -125,7 +123,7 @@ async fn led_task(mut leds: PioWs2812<'static, PIO1, 0, NUM_LEDS>) -> ! {
 /// Blink the whole strip while booting (Wi-Fi join, DHCP, waiting for SimHub),
 /// and return the first telemetry sample once it arrives.
 async fn blink_until_first_packet(
-    leds: &mut PioWs2812<'static, PIO1, 0, NUM_LEDS>,
+    leds: &mut PioWs2812<'static, PIO0, 1, NUM_LEDS>,
     frame: &mut [RGB8; NUM_LEDS],
 ) -> Telemetry {
     let mut lit = true;
@@ -182,13 +180,11 @@ async fn main(spawner: Spawner) {
     //let clm = unsafe { core::slice::from_raw_parts(0x10140000 as *const u8, 4752) };
 
     // LED strip on PIO1 (PIO0 is used by the Wi-Fi chip) with its own DMA channel.
-    let Pio {
-        mut common, sm0, ..
-    } = Pio::new(peripherals.PIO1, Irqs);
-    let ws2812_program = PioWs2812Program::new(&mut common);
-    let mut leds = PioWs2812::<_, 0, NUM_LEDS>::new(
-        &mut common,
-        sm0,
+    let mut pio0 = Pio::new(peripherals.PIO0, Irqs);
+    let ws2812_program = PioWs2812Program::new(&mut pio0.common);
+    let mut leds = PioWs2812::<_, 1, NUM_LEDS>::new(
+        &mut pio0.common,
+        pio0.sm1,
         peripherals.DMA_CH1,
         peripherals.PIN_10,
         &ws2812_program,
@@ -200,7 +196,6 @@ async fn main(spawner: Spawner) {
 
     let pwr = Output::new(peripherals.PIN_23, Level::Low);
     let cs = Output::new(peripherals.PIN_25, Level::High);
-    let mut pio0 = Pio::new(peripherals.PIO0, Irqs);
     let spi = PioSpi::new(
         &mut pio0.common,
         pio0.sm0, // Here we are using sm0 from PIO0. Remember, there are 4sm per PIO, and 2 PIOs (PIO0 and PIO1)
