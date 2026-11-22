@@ -74,7 +74,13 @@ async fn udp_task(stack: Stack<'static>) -> ! {
     let mut tx_buffer = [0u8; 16];
     let mut packet = [0u8; MAX_PACKET_SIZE];
 
-    let mut socket = UdpSocket::new(stack, &mut rx_meta, &mut rx_buffer, &mut tx_meta, &mut tx_buffer);
+    let mut socket = UdpSocket::new(
+        stack,
+        &mut rx_meta,
+        &mut rx_buffer,
+        &mut tx_meta,
+        &mut tx_buffer,
+    );
     socket.bind(UDP_PORT).unwrap();
     defmt::info!("Listening for telemetry on UDP port {}", UDP_PORT);
 
@@ -124,9 +130,17 @@ async fn blink_until_first_packet(
 ) -> Telemetry {
     let mut lit = true;
     loop {
-        let colour = if lit { BOOT_BLINK_COLOUR } else { RGB8::default() };
+        defmt::info!("Trying ...");
+        let colour = if lit {
+            BOOT_BLINK_COLOUR
+        } else {
+            RGB8::default()
+        };
+        defmt::info!("to ...");
         frame.fill(colour);
+        defmt::info!("lit ...");
         leds.write(frame).await;
+        defmt::info!("leds ...");
         lit = !lit;
 
         // Waiting on the signal doubles as the blink delay, so the first packet
@@ -169,18 +183,19 @@ async fn main(spawner: Spawner) {
 
     // LED strip on PIO1 (PIO0 is used by the Wi-Fi chip) with its own DMA channel.
     let Pio {
-        mut common,
-        sm0,
-        ..
+        mut common, sm0, ..
     } = Pio::new(peripherals.PIO1, Irqs);
     let ws2812_program = PioWs2812Program::new(&mut common);
-    let leds = PioWs2812::<_, 0, NUM_LEDS>::new(
+    let mut leds = PioWs2812::<_, 0, NUM_LEDS>::new(
         &mut common,
         sm0,
         peripherals.DMA_CH1,
         peripherals.PIN_10,
         &ws2812_program,
     );
+    let mut frame = [RGB8::default(); NUM_LEDS];
+    frame.fill(BOOT_BLINK_COLOUR);
+    leds.write(&frame).await;
     spawner.spawn(led_task(leds)).unwrap();
 
     let pwr = Output::new(peripherals.PIN_23, Level::Low);
@@ -247,7 +262,11 @@ async fn main(spawner: Spawner) {
     // And now we can use it!
     defmt::info!("Stack is up!");
     if let Some(config) = stack.config_v4() {
-        defmt::info!("Send telemetry to {}:{}", config.address.address(), UDP_PORT);
+        defmt::info!(
+            "Send telemetry to {}:{}",
+            config.address.address(),
+            UDP_PORT
+        );
     }
 
     spawner.spawn(udp_task(stack)).unwrap();
