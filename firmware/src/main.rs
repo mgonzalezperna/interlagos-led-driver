@@ -30,6 +30,8 @@ bind_interrupts!(struct Irqs {
     PIO1_IRQ_0 => InterruptHandler<PIO1>;
 });
 
+const WIFI_NETWORK: &str = ""; // change to your network SSID
+const WIFI_PASSWORD: &str = ""; // change to your network password
 
 /// Number of LEDs on the strip (data line on GPIO 10).
 const NUM_LEDS: usize = 45;
