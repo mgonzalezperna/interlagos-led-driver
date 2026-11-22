@@ -37,7 +37,7 @@ const WIFI_NETWORK: &str = ""; // change to your network SSID
 const WIFI_PASSWORD: &str = ""; // change to your network password
 
 /// Number of LEDs on the strip (data line on GPIO 10).
-const NUM_LEDS: usize = 45;
+const NUM_LEDS: usize = 90;
 /// Number of LEDs lit behind the current position, as a fading trail.
 const TRAIL_LEN: usize = 6;
 /// Peak value of each colour channel. 90 LEDs at full white can draw over 5 A,
