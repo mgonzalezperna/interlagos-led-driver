@@ -1,0 +1,9 @@
+[package]
+name = "interlagos-telemetry-sender"
+version = "0.1.0"
+edition = "2021"
+description = "Sends simulated race telemetry to the Pico over UDP, for testing without SimHub"
+
+[dependencies]
+postcard = "1.1.3"
+serde = { version = "1.0.203", features = ["derive"] }

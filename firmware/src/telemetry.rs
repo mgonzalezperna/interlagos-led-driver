@@ -20,7 +20,10 @@ pub const UDP_PORT: u16 = 5005;
 /// Size of the largest packet we accept.
 pub const MAX_PACKET_SIZE: usize = 32;
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, defmt::Format)]
+// This file is also compiled on the PC by the `sender` crate, where defmt is not
+// available, so the defmt derive is only applied on the bare-metal target.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[cfg_attr(target_os = "none", derive(defmt::Format))]
 pub struct Telemetry {
     /// Position on the lap, 0.0 (start/finish line) to 1.0.
     pub lap_pct: f32,
