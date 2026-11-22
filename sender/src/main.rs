@@ -147,6 +147,7 @@ fn main() {
     let mut buffer = [0u8; MAX_PACKET_SIZE];
     let mut last = Instant::now();
     let mut last_report = Instant::now();
+    let mut send_failing = false;
 
     loop {
         let now = Instant::now();
@@ -154,8 +155,21 @@ fn main() {
         last = now;
 
         let packet = postcard::to_slice(&sample, &mut buffer).expect("packet does not fit buffer");
-        if let Err(e) = socket.send(packet) {
-            eprintln!("send failed: {e}");
+        match socket.send(packet) {
+            Ok(_) => {
+                if send_failing {
+                    println!("Pico reachable again, sending resumed");
+                    send_failing = false;
+                }
+            }
+            Err(e) => {
+                // Report once when the link goes down, not for every packet.
+                // "Host is down" usually means the Pico is not answering ARP.
+                if !send_failing {
+                    eprintln!("send failed: {e}. Retrying every packet until the Pico responds...");
+                    send_failing = true;
+                }
+            }
         }
 
         if last_report.elapsed() >= Duration::from_secs(1) {
