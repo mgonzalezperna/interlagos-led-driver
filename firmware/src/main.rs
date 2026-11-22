@@ -17,11 +17,14 @@ use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_rp::pio_programs::ws2812::{PioWs2812, PioWs2812Program};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{with_timeout, Duration};
+use core::fmt::Write as _;
+
+use embassy_futures::select::{select3, Either3};
+use embassy_time::{Duration, Timer};
 use smart_leds::RGB8;
 use static_cell::StaticCell;
 
-use telemetry::{Telemetry, MAX_PACKET_SIZE, UDP_PORT};
+use telemetry::{Telemetry, LED_TEST_PORT, MAX_PACKET_SIZE, UDP_PORT};
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -46,10 +49,14 @@ const TELEMETRY_TIMEOUT: Duration = Duration::from_millis(1000);
 const BOOT_BLINK_HALF_PERIOD: Duration = Duration::from_millis(500);
 /// Boot blink colour. Every LED is lit, so keep it dim to limit current draw.
 const BOOT_BLINK_COLOUR: RGB8 = RGB8::new(0, 0, MAX_BRIGHTNESS / 4);
+/// Colour of the LED lit via the LED test port. White, so it stands out.
+const TEST_LED_COLOUR: RGB8 = RGB8::new(MAX_BRIGHTNESS, MAX_BRIGHTNESS, MAX_BRIGHTNESS);
 
 /// Latest telemetry received over UDP. Only the newest sample matters, so a
 /// `Signal` (which overwrites unread values) is used instead of a queue.
 static TELEMETRY: Signal<CriticalSectionRawMutex, Telemetry> = Signal::new();
+/// Index of the LED to light, received on the LED test port.
+static LED_TEST: Signal<CriticalSectionRawMutex, usize> = Signal::new();
 
 /// Create a new instance of the CYW43 driver.
 #[embassy_executor::task]
@@ -102,53 +109,125 @@ async fn udp_task(stack: Stack<'static>) -> ! {
     }
 }
 
-/// Draw the track position on the LED strip.
+/// Receive manual "light LED N" commands as ASCII text and reply with the result.
 #[embassy_executor::task]
-async fn led_task(mut leds: PioWs2812<'static, PIO0, 1, NUM_LEDS>) -> ! {
-    let mut frame = [RGB8::default(); NUM_LEDS];
+async fn led_test_task(stack: Stack<'static>) -> ! {
+    let mut rx_meta = [PacketMetadata::EMPTY; 2];
+    let mut rx_buffer = [0u8; 64];
+    let mut tx_meta = [PacketMetadata::EMPTY; 2];
+    let mut tx_buffer = [0u8; 128];
+    let mut packet = [0u8; 16];
 
-    let mut sample = Some(blink_until_first_packet(&mut leds, &mut frame).await);
+    let mut socket = UdpSocket::new(
+        stack,
+        &mut rx_meta,
+        &mut rx_buffer,
+        &mut tx_meta,
+        &mut tx_buffer,
+    );
+    socket.bind(LED_TEST_PORT).unwrap();
+    defmt::info!("Listening for LED test commands on UDP port {}", LED_TEST_PORT);
 
     loop {
-        frame.fill(RGB8::default());
-        match sample {
-            Some(sample) => render_position(&mut frame, sample.lap_pct),
-            // No data for a while: show a single dim red LED at the start/finish line.
-            None => frame[0] = RGB8::new(MAX_BRIGHTNESS / 4, 0, 0),
-        }
-        leds.write(&frame).await;
+        let (len, sender) = match socket.recv_from(&mut packet).await {
+            Ok(received) => received,
+            Err(_) => {
+                defmt::warn!("Dropped oversized LED test packet");
+                continue;
+            }
+        };
 
-        sample = with_timeout(TELEMETRY_TIMEOUT, TELEMETRY.wait()).await.ok();
+        let index = core::str::from_utf8(&packet[..len])
+            .ok()
+            .and_then(|text| text.trim().parse::<usize>().ok());
+
+        let mut reply: heapless::String<64> = heapless::String::new();
+        // The reply always fits in 64 bytes, so the write cannot fail.
+        let _ = match index {
+            Some(index) if index < NUM_LEDS => {
+                LED_TEST.signal(index);
+                defmt::info!("LED test: lighting LED {}", index);
+                writeln!(reply, "LED {} on", index)
+            }
+            Some(index) => {
+                defmt::warn!("LED test: index {} out of range", index);
+                writeln!(reply, "error: {} out of range, NUM_LEDS is {}", index, NUM_LEDS)
+            }
+            None => writeln!(reply, "error: send an LED index as text, e.g. 12"),
+        };
+        // Best effort: the command already took effect, a lost reply doesn't matter.
+        let _ = socket.send_to(reply.as_bytes(), sender).await;
     }
 }
 
-/// Blink the whole strip while booting (Wi-Fi join, DHCP, waiting for SimHub),
-/// and return the first telemetry sample once it arrives.
-async fn blink_until_first_packet(
-    leds: &mut PioWs2812<'static, PIO0, 1, NUM_LEDS>,
-    frame: &mut [RGB8; NUM_LEDS],
-) -> Telemetry {
-    let mut lit = true;
-    loop {
-        defmt::info!("Trying ...");
-        let colour = if lit {
-            BOOT_BLINK_COLOUR
-        } else {
-            RGB8::default()
-        };
-        defmt::info!("to ...");
-        frame.fill(colour);
-        defmt::info!("lit ...");
-        leds.write(frame).await;
-        defmt::info!("leds ...");
-        lit = !lit;
+/// What the LED strip is currently showing.
+#[derive(Clone, Copy)]
+enum Display {
+    /// Blinking the whole strip until the first packet arrives.
+    Booting { lit: bool },
+    /// Showing the car's position from the latest telemetry.
+    Position(Telemetry),
+    /// Telemetry stopped: a single dim red LED at the start/finish line.
+    Idle,
+    /// A single LED chosen via the LED test port.
+    TestLed(usize),
+}
 
-        // Waiting on the signal doubles as the blink delay, so the first packet
-        // ends the blinking immediately instead of after the current half-period.
-        if let Ok(sample) = with_timeout(BOOT_BLINK_HALF_PERIOD, TELEMETRY.wait()).await {
-            defmt::info!("First telemetry packet received");
-            return sample;
+enum Event {
+    Telemetry(Telemetry),
+    TestLed(usize),
+    Timeout,
+}
+
+/// Wait for the next telemetry sample or LED test command, or until `timeout`
+/// expires (`None` waits forever).
+async fn next_event(timeout: Option<Duration>) -> Event {
+    let timer = async {
+        match timeout {
+            Some(timeout) => Timer::after(timeout).await,
+            None => core::future::pending().await,
         }
+    };
+    match select3(TELEMETRY.wait(), LED_TEST.wait(), timer).await {
+        Either3::First(sample) => Event::Telemetry(sample),
+        Either3::Second(index) => Event::TestLed(index),
+        Either3::Third(()) => Event::Timeout,
+    }
+}
+
+/// Drive the LED strip: boot blink, track position, idle, or a test LED.
+#[embassy_executor::task]
+async fn led_task(mut leds: PioWs2812<'static, PIO0, 1, NUM_LEDS>) -> ! {
+    let mut frame = [RGB8::default(); NUM_LEDS];
+    let mut display = Display::Booting { lit: true };
+
+    loop {
+        frame.fill(RGB8::default());
+        match display {
+            Display::Booting { lit: true } => frame.fill(BOOT_BLINK_COLOUR),
+            Display::Booting { lit: false } => {}
+            Display::Position(sample) => render_position(&mut frame, sample.lap_pct),
+            Display::Idle => frame[0] = RGB8::new(MAX_BRIGHTNESS / 4, 0, 0),
+            Display::TestLed(index) => frame[index] = TEST_LED_COLOUR,
+        }
+        leds.write(&frame).await;
+
+        // Only the boot blink and live telemetry change on their own. A test LED
+        // stays lit until the next command or telemetry packet.
+        let timeout = match display {
+            Display::Booting { .. } => Some(BOOT_BLINK_HALF_PERIOD),
+            Display::Position(_) => Some(TELEMETRY_TIMEOUT),
+            Display::Idle | Display::TestLed(_) => None,
+        };
+
+        display = match next_event(timeout).await {
+            Event::Telemetry(sample) => Display::Position(sample),
+            Event::TestLed(index) => Display::TestLed(index),
+            Event::Timeout => match display {
+                Display::Booting { lit } => Display::Booting { lit: !lit },
+                _ => Display::Idle,
+            },
+        };
     }
 }
 
@@ -264,7 +343,13 @@ async fn main(spawner: Spawner) {
             config.address.address(),
             UDP_PORT
         );
+        defmt::info!(
+            "Light a single LED with: echo <index> | nc -u -w1 {} {}",
+            config.address.address(),
+            LED_TEST_PORT
+        );
     }
 
     spawner.spawn(udp_task(stack)).unwrap();
+    spawner.spawn(led_test_task(stack)).unwrap();
 }

@@ -17,6 +17,19 @@ use serde::{Deserialize, Serialize};
 /// UDP port the Pico listens on.
 pub const UDP_PORT: u16 = 5005;
 
+/// UDP port for manually lighting a single LED, e.g. to count the LEDs on a strip.
+///
+/// The packet is the LED index as ASCII decimal text (0-based, surrounding
+/// whitespace ignored), so it can be sent by hand:
+///
+/// ```text
+/// echo 12 | nc -u -w1 <pico-ip> 5006
+/// ```
+///
+/// The Pico replies with a short text message saying whether it worked. The LED
+/// stays lit until another index or a telemetry packet arrives.
+pub const LED_TEST_PORT: u16 = 5006;
+
 /// Size of the largest packet we accept.
 pub const MAX_PACKET_SIZE: usize = 32;
 
